@@ -3,8 +3,9 @@ import tensorflow as tf
 import cv2
 
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
+    # --- FIX: Removed extra brackets around model.inputs ---
     grad_model = tf.keras.models.Model(
-        [model.inputs], 
+        model.inputs, 
         [model.get_layer(last_conv_layer_name).output, model.output]
     )
 
@@ -28,8 +29,7 @@ def save_and_display_gradcam(img_path, heatmap, alpha=0.4):
     img = cv2.resize(img, (224, 224))
     heatmap = np.uint8(255 * heatmap)
     
-    # Manually create JET colormap since matplotlib is heavy
-    # This is a lightweight heatmap coloring
+    # Use JET colormap
     heatmap_img = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     
     superimposed_img = heatmap_img * alpha + img

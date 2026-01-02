@@ -8,6 +8,7 @@ import cv2
 import base64
 import gradcam
 from tensorflow.keras.layers import InputLayer
+import traceback # Added for debugging
 
 # --- PATCH 1: Fix batch_shape ---
 class PatchedInputLayer(InputLayer):
@@ -16,13 +17,12 @@ class PatchedInputLayer(InputLayer):
             kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
         super().__init__(**kwargs)
 
-# --- PATCH 2: Fix DTypePolicy (UPDATED) ---
-# We are adding more details to the fake ID card so Keras is happy.
+# --- PATCH 2: Fix DTypePolicy ---
 class DTypePolicy:
     def __init__(self, name="float32", **kwargs):
         self.name = name
-        self.compute_dtype = name   # <--- THIS WAS MISSING
-        self.variable_dtype = name  # Adding this to be extra safe
+        self.compute_dtype = name
+        self.variable_dtype = name
         self._name = name
 
     def get_config(self):
@@ -38,7 +38,6 @@ MODEL_PATH = 'leukemia_alexnet_model.h5'
 print("Loading Model...")
 
 try:
-    # Register our smart patches
     custom_objects = {
         'InputLayer': PatchedInputLayer,
         'DTypePolicy': DTypePolicy
@@ -62,6 +61,7 @@ if model:
             if 'conv' in layer.name.lower():
                 target_layer = layer.name
                 break
+        print(f"Heatmap will use layer: {target_layer}")
     except Exception as e:
         print(f"Error waking up model: {e}")
 
@@ -103,11 +103,16 @@ def predict():
         hm_b64 = None
         if target_layer:
             try:
+                print(f"Generating heatmap for layer: {target_layer}...")
                 hm = gradcam.make_gradcam_heatmap(img, model, target_layer)
                 hm_path = gradcam.save_and_display_gradcam("temp.jpg", hm)
                 hm_b64 = image_to_base64(hm_path)
-            except:
-                pass 
+                print("Heatmap generated successfully!")
+            except Exception as e:
+                print(f"HEATMAP FAILED: {e}")
+                traceback.print_exc() # This prints the full error to terminal
+        else:
+            print("Warning: No 'conv' layer found for heatmap.")
 
         return jsonify({'diagnosis': result, 'confidence': f"{conf:.2f}", 'heatmap': hm_b64})
     except Exception as e:
