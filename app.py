@@ -16,16 +16,18 @@ class PatchedInputLayer(InputLayer):
             kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
         super().__init__(**kwargs)
 
-# --- PATCH 2: Fix DTypePolicy (NEW) ---
-# The model has a fancy memory policy tag that we don't need.
-# We create a dummy class so Keras doesn't crash when it sees it.
+# --- PATCH 2: Fix DTypePolicy (UPDATED) ---
+# We are adding more details to the fake ID card so Keras is happy.
 class DTypePolicy:
-    def __init__(self, name=None, **kwargs):
-        self.name = "float32"  # Force standard format
-    
+    def __init__(self, name="float32", **kwargs):
+        self.name = name
+        self.compute_dtype = name   # <--- THIS WAS MISSING
+        self.variable_dtype = name  # Adding this to be extra safe
+        self._name = name
+
     def get_config(self):
-        return {"name": "float32"}
-    
+        return {"name": self.name}
+
     @classmethod
     def from_config(cls, config):
         return cls(**config)
@@ -36,7 +38,7 @@ MODEL_PATH = 'leukemia_alexnet_model.h5'
 print("Loading Model...")
 
 try:
-    # We tell Keras: "If you see InputLayer or DTypePolicy, use our versions."
+    # Register our smart patches
     custom_objects = {
         'InputLayer': PatchedInputLayer,
         'DTypePolicy': DTypePolicy
