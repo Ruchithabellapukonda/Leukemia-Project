@@ -3,7 +3,6 @@ import tensorflow as tf
 import cv2
 
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    # --- FIX: Removed extra brackets around model.inputs ---
     grad_model = tf.keras.models.Model(
         model.inputs, 
         [model.get_layer(last_conv_layer_name).output, model.output]
@@ -25,13 +24,19 @@ def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None
     return heatmap.numpy()
 
 def save_and_display_gradcam(img_path, heatmap, alpha=0.4):
+    # 1. Load original image and resize to 224x224
     img = cv2.imread(img_path)
     img = cv2.resize(img, (224, 224))
-    heatmap = np.uint8(255 * heatmap)
     
-    # Use JET colormap
+    # --- FIX: RESIZE HEATMAP TO MATCH IMAGE SIZE ---
+    # The heatmap starts small (e.g., 12x12). We stretch it to 224x224.
+    heatmap = cv2.resize(heatmap, (224, 224))
+    
+    # 2. Convert to RGB color map
+    heatmap = np.uint8(255 * heatmap)
     heatmap_img = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
     
+    # 3. Superimpose (Now sizes match: 224x224 vs 224x224)
     superimposed_img = heatmap_img * alpha + img
     superimposed_img = np.clip(superimposed_img, 0, 255).astype('uint8')
     
