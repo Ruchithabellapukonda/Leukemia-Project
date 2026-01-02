@@ -1,7 +1,7 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import tensorflow as tf
 import numpy as np
 import cv2
@@ -77,6 +77,10 @@ def prepare_image(path):
 def image_to_base64(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode('utf-8')
+
+@app.route('/')
+def home():
+    return render_template('index.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():

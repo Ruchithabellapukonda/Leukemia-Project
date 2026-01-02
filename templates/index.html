@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leukemia AI Detector</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .main-card { max-width: 800px; margin: 50px auto; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); border: none; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 15px 15px 0 0; text-align: center; }
+        .upload-area { border: 2px dashed #cbd5e0; border-radius: 10px; padding: 40px; text-align: center; cursor: pointer; transition: 0.3s; background: white; }
+        .upload-area:hover { border-color: #667eea; background-color: #f7fafc; }
+        #preview { max-height: 300px; border-radius: 10px; margin-top: 20px; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .result-box { display: none; margin-top: 30px; padding: 20px; border-radius: 10px; background-color: #fff; border-left: 5px solid #667eea; }
+        .heatmap-img { max-width: 100%; border-radius: 10px; margin-top: 15px; border: 1px solid #ddd; }
+        .loading { display: none; text-align: center; margin: 20px; }
+        .btn-predict { width: 100%; padding: 12px; font-size: 1.1rem; margin-top: 20px; background: #667eea; border: none; }
+        .btn-predict:hover { background: #764ba2; }
+    </style>
+</head>
+<body>
+
+<div class="card main-card">
+    <div class="header">
+        <h1>Leukemia Classification AI</h1>
+        <p class="mb-0">Upload a cell microscopic image for instant diagnosis</p>
+    </div>
+    <div class="card-body p-5">
+        
+        <form id="uploadForm">
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <h4 class="text-muted">Click to Upload Image</h4>
+                <p class="text-secondary small">Supported formats: JPG, PNG</p>
+                <input type="file" id="fileInput" accept="image/*" hidden onchange="previewImage(event)">
+            </div>
+            <img id="preview" class="img-fluid mx-auto d-block">
+            
+            <button type="submit" class="btn btn-primary btn-predict" disabled id="predictBtn">Analyze Image</button>
+        </form>
+
+        <div class="loading" id="loading">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-2">Analyzing cell patterns...</p>
+        </div>
+
+        <div class="result-box" id="resultBox">
+            <h3 class="mb-3">Diagnosis Report</h3>
+            <div class="row">
+                <div class="col-md-6">
+                    <h5>Prediction: <span class="badge bg-primary" id="predictionText">-</span></h5>
+                    <p>Confidence: <strong id="confidenceText">-</strong>%</p>
+                    <div class="alert alert-info small">
+                        This AI analyzes visual patterns. Please consult a specialist for clinical validation.
+                    </div>
+                </div>
+                <div class="col-md-6 text-center">
+                    <h6>Grad-CAM Analysis (Heatmap)</h6>
+                    <p class="small text-muted">Red areas indicate where the AI looked.</p>
+                    <img id="heatmapImage" class="heatmap-img" alt="Heatmap">
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const predictBtn = document.getElementById('predictBtn');
+    const preview = document.getElementById('preview');
+
+    function previewImage(event) {
+        const file = event.target.files[0];
+        if (file) {
+            preview.src = URL.createObjectURL(file);
+            preview.style.display = 'block';
+            predictBtn.disabled = false;
+            // Hide previous results
+            document.getElementById('resultBox').style.display = 'none';
+        }
+    }
+
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        // Show loading
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('resultBox').style.display = 'none';
+        predictBtn.disabled = true;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+
+            // Show Result
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('resultBox').style.display = 'block';
+            document.getElementById('predictionText').innerText = data.diagnosis;
+            document.getElementById('confidenceText').innerText = data.confidence;
+            
+            if (data.heatmap) {
+                document.getElementById('heatmapImage').src = "data:image/jpeg;base64," + data.heatmap;
+            }
+        } catch (error) {
+            alert("Error analyzing image. Please try again.");
+            document.getElementById('loading').style.display = 'none';
+        } finally {
+            predictBtn.disabled = false;
+        }
+    });
+</script>
+
+</body>
+</html>
