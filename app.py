@@ -9,7 +9,7 @@ import gradcam
 
 # --- 1. PATCHES FOR COMPATIBILITY ---
 
-# FIX A: Handle "batch_shape" vs "batch_input_shape" mismatch
+# FIX A: Handle "batch_shape"
 class PatchedInputLayer(InputLayer):
     def __init__(self, **kwargs):
         if 'batch_shape' in kwargs:
@@ -20,10 +20,9 @@ class PatchedInputLayer(InputLayer):
         config = super().get_config()
         return config
 
-# FIX B: "DTypePolicy" mismatch (Updated to have 'name' and types)
+# FIX B: Handle "DTypePolicy"
 class DTypePolicy:
     def __init__(self, name="float32", **kwargs):
-        # We give it a default name "float32" so TensorFlow doesn't crash
         self.name = name
         self._compute_dtype = name
         self._variable_dtype = name
@@ -41,7 +40,6 @@ class DTypePolicy:
 
     @classmethod
     def from_config(cls, config):
-        # If config is None or empty, use default
         if not config:
             return cls()
         return cls(**config)
@@ -56,11 +54,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 print("Loading Model... Please wait...")
 try:
-    # Load model with BOTH custom patches
+    # --- THE MAGIC FIX: compile=False ---
+    # This tells Keras: "Ignore the optimizer and training settings. Just load the weights."
     model = load_model(MODEL_PATH, custom_objects={
         'InputLayer': PatchedInputLayer,
         'DTypePolicy': DTypePolicy
-    })
+    }, compile=False) 
+    
     print("✅ Model Loaded Successfully!")
 except Exception as e:
     print(f"❌ Error loading model: {e}")
@@ -127,7 +127,7 @@ def predict():
                 heatmap_filename = "heatmap_result.jpg"
                 heatmap_path = os.path.join(UPLOAD_FOLDER, heatmap_filename)
                 
-                # Use the original path for superimposing, but we pass the HEATMAP array
+                # Superimpose
                 gradcam.save_and_display_gradcam(file_path, heatmap, alpha=0.4)
                 
                 if os.path.exists("heatmap_result.jpg"):
