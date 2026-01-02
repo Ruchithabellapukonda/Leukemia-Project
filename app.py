@@ -7,42 +7,54 @@ import numpy as np
 import cv2
 import base64
 import gradcam
-
-# --- THE MAGIC FIX START ---
-# This class tricks TensorFlow into accepting the old 'batch_shape' argument
 from tensorflow.keras.layers import InputLayer
 
+# --- PATCH 1: Fix batch_shape ---
 class PatchedInputLayer(InputLayer):
     def __init__(self, **kwargs):
-        # If the old model has 'batch_shape', rename it to 'batch_input_shape'
         if 'batch_shape' in kwargs:
             kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
         super().__init__(**kwargs)
-# --- THE MAGIC FIX END ---
+
+# --- PATCH 2: Fix DTypePolicy (NEW) ---
+# The model has a fancy memory policy tag that we don't need.
+# We create a dummy class so Keras doesn't crash when it sees it.
+class DTypePolicy:
+    def __init__(self, name=None, **kwargs):
+        self.name = "float32"  # Force standard format
+    
+    def get_config(self):
+        return {"name": "float32"}
+    
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
 
 app = Flask(__name__)
 
-# Load Model with the Patch
 MODEL_PATH = 'leukemia_alexnet_model.h5'
 print("Loading Model...")
 
 try:
-    # We force the model to use our patched layer instead of the strict one
-    with tf.keras.utils.custom_object_scope({'InputLayer': PatchedInputLayer}):
+    # We tell Keras: "If you see InputLayer or DTypePolicy, use our versions."
+    custom_objects = {
+        'InputLayer': PatchedInputLayer,
+        'DTypePolicy': DTypePolicy
+    }
+    
+    with tf.keras.utils.custom_object_scope(custom_objects):
         model = tf.keras.models.load_model(MODEL_PATH, compile=False)
     print("Model Loaded Successfully!")
 except Exception as e:
     print(f"CRITICAL ERROR LOADING MODEL: {e}")
     model = None
 
-# Only wake up model if it loaded
+# Wake up model
 if model:
     try:
-        # Wake up model
         dummy = np.zeros((1, 224, 224, 3))
         _ = model(dummy)
         
-        # Find Layer
         target_layer = None
         for layer in reversed(model.layers):
             if 'conv' in layer.name.lower():
@@ -82,7 +94,6 @@ def predict():
         result = CLASS_NAMES[idx]
         conf = float(np.max(preds)) * 100
 
-        # Heatmap
         hm_b64 = None
         if target_layer:
             try:
@@ -90,7 +101,7 @@ def predict():
                 hm_path = gradcam.save_and_display_gradcam("temp.jpg", hm)
                 hm_b64 = image_to_base64(hm_path)
             except:
-                pass # Continue even if heatmap fails
+                pass 
 
         return jsonify({'diagnosis': result, 'confidence': f"{conf:.2f}", 'heatmap': hm_b64})
     except Exception as e:
