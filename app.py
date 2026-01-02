@@ -5,9 +5,9 @@ from flask import Flask, request, render_template, jsonify
 from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import InputLayer
 import cv2
-import gradcam  # Import our heatmap helper
+import gradcam
 
-# --- 1. PATCHES FOR COMPATIBILITY (The Time Travel Fixes) ---
+# --- 1. PATCHES FOR COMPATIBILITY ---
 
 # FIX A: Handle "batch_shape" vs "batch_input_shape" mismatch
 class PatchedInputLayer(InputLayer):
@@ -20,17 +20,30 @@ class PatchedInputLayer(InputLayer):
         config = super().get_config()
         return config
 
-# FIX B: Handle "DTypePolicy" mismatch (The error you just saw)
+# FIX B: "DTypePolicy" mismatch (Updated to have 'name' and types)
 class DTypePolicy:
-    def __init__(self, *args, **kwargs):
-        # We just ignore whatever policy settings the model had
-        pass
+    def __init__(self, name="float32", **kwargs):
+        # We give it a default name "float32" so TensorFlow doesn't crash
+        self.name = name
+        self._compute_dtype = name
+        self._variable_dtype = name
+
+    @property
+    def compute_dtype(self):
+        return self._compute_dtype
+
+    @property
+    def variable_dtype(self):
+        return self._variable_dtype
     
     def get_config(self):
-        return {}
+        return {"name": self.name}
 
     @classmethod
     def from_config(cls, config):
+        # If config is None or empty, use default
+        if not config:
+            return cls()
         return cls(**config)
 
 # --- 2. SETUP FLASK & LOAD MODEL ---
@@ -46,15 +59,13 @@ try:
     # Load model with BOTH custom patches
     model = load_model(MODEL_PATH, custom_objects={
         'InputLayer': PatchedInputLayer,
-        'DTypePolicy': DTypePolicy  # <--- This fixes the new error
+        'DTypePolicy': DTypePolicy
     })
     print("✅ Model Loaded Successfully!")
 except Exception as e:
     print(f"❌ Error loading model: {e}")
-    # We exit because if the model doesn't load, the app is useless
     exit(1)
 
-# The classes your model knows (Must match training order)
 CLASSES = ['Benign', 'Early', 'Pre', 'Pro']
 
 # --- 3. ROUTES ---
@@ -73,42 +84,36 @@ def predict():
         return jsonify({'error': 'No file selected'})
 
     if file:
-        # Save file temporarily
         filename = "temp_upload.jpg"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         file.save(file_path)
 
-        # --- IMAGE PREPROCESSING (THE LOGIC FIX) ---
         try:
             # 1. Read Image
             img = cv2.imread(file_path)
             
-            # 2. Fix Color: OpenCV loads as BGR, but Keras needs RGB
+            # 2. Fix Color: BGR to RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
-            # 3. Resize: Force it to 224x224 (AlexNet standard)
+            # 3. Resize to 224x224
             img = cv2.resize(img, (224, 224))
             
-            # 4. Normalize: Convert 0-255 (integers) to 0-1 (decimals)
+            # 4. Normalize (0-1)
             img_array = img / 255.0
             
-            # 5. Add Batch Dimension: Change shape from (224,224,3) to (1,224,224,3)
+            # 5. Add Batch Dimension
             img_array = np.expand_dims(img_array, axis=0)
 
             # --- PREDICTION ---
             predictions = model.predict(img_array)
-            
-            # DEBUG: Print raw numbers to terminal
             print(f"🔍 RAW PROBABILITIES: {predictions}")
 
-            # Get the highest score
             class_index = np.argmax(predictions[0])
             predicted_label = CLASSES[class_index]
             confidence = float(np.max(predictions[0])) * 100
 
             # --- GRAD-CAM HEATMAP ---
             try:
-                # Find the last convolutional layer automatically
                 target_layer = None 
                 for layer in reversed(model.layers):
                     if 'conv' in layer.name:
@@ -119,14 +124,12 @@ def predict():
                 
                 heatmap = gradcam.make_gradcam_heatmap(img_array, model, target_layer)
                 
-                # Save heatmap result
                 heatmap_filename = "heatmap_result.jpg"
                 heatmap_path = os.path.join(UPLOAD_FOLDER, heatmap_filename)
                 
-                # Superimpose on original image
+                # Use the original path for superimposing, but we pass the HEATMAP array
                 gradcam.save_and_display_gradcam(file_path, heatmap, alpha=0.4)
                 
-                # Move the result to static folder
                 if os.path.exists("heatmap_result.jpg"):
                     os.rename("heatmap_result.jpg", heatmap_path)
                     
@@ -134,7 +137,6 @@ def predict():
                 print(f"⚠️ Heatmap Failed: {hm_error}")
                 heatmap_filename = None 
 
-            # Return JSON result
             return jsonify({
                 'prediction': predicted_label,
                 'confidence': f"{confidence:.2f}",
