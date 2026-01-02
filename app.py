@@ -1,122 +1,137 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-from flask import Flask, request, jsonify, render_template
-import tensorflow as tf
 import numpy as np
-import cv2
-import base64
-import gradcam
+import tensorflow as tf
+from flask import Flask, request, render_template, jsonify
+from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import InputLayer
-import traceback # Added for debugging
+import cv2
+import gradcam  # Import our heatmap helper
 
-# --- PATCH 1: Fix batch_shape ---
+# --- 1. PATCH FOR OLDER MODELS (The Time Travel Fix) ---
 class PatchedInputLayer(InputLayer):
     def __init__(self, **kwargs):
         if 'batch_shape' in kwargs:
+            # Fix: older models saved 'batch_shape', newer Keras wants 'batch_input_shape'
             kwargs['batch_input_shape'] = kwargs.pop('batch_shape')
         super().__init__(**kwargs)
 
-# --- PATCH 2: Fix DTypePolicy ---
-class DTypePolicy:
-    def __init__(self, name="float32", **kwargs):
-        self.name = name
-        self.compute_dtype = name
-        self.variable_dtype = name
-        self._name = name
-
     def get_config(self):
-        return {"name": self.name}
+        config = super().get_config()
+        return config
 
-    @classmethod
-    def from_config(cls, config):
-        return cls(**config)
-
+# --- 2. SETUP FLASK & LOAD MODEL ---
 app = Flask(__name__)
 
+# Config
 MODEL_PATH = 'leukemia_alexnet_model.h5'
-print("Loading Model...")
+UPLOAD_FOLDER = 'static/uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+print("Loading Model... Please wait...")
 try:
-    custom_objects = {
-        'InputLayer': PatchedInputLayer,
-        'DTypePolicy': DTypePolicy
-    }
-    
-    with tf.keras.utils.custom_object_scope(custom_objects):
-        model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("Model Loaded Successfully!")
+    # Load model with the custom patch
+    model = load_model(MODEL_PATH, custom_objects={'InputLayer': PatchedInputLayer})
+    print("✅ Model Loaded Successfully!")
 except Exception as e:
-    print(f"CRITICAL ERROR LOADING MODEL: {e}")
-    model = None
+    print(f"❌ Error loading model: {e}")
+    exit(1)
 
-# Wake up model
-if model:
-    try:
-        dummy = np.zeros((1, 224, 224, 3))
-        _ = model(dummy)
-        
-        target_layer = None
-        for layer in reversed(model.layers):
-            if 'conv' in layer.name.lower():
-                target_layer = layer.name
-                break
-        print(f"Heatmap will use layer: {target_layer}")
-    except Exception as e:
-        print(f"Error waking up model: {e}")
+# The classes your model knows (Must match training order)
+CLASSES = ['Benign', 'Early', 'Pre', 'Pro']
 
-CLASS_NAMES = ['Benign', 'Early', 'Pre', 'Pro']
-
-def prepare_image(path):
-    img = cv2.imread(path)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (224, 224))
-    img = img / 255.0
-    return np.expand_dims(img, axis=0)
-
-def image_to_base64(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode('utf-8')
+# --- 3. ROUTES ---
 
 @app.route('/')
-def home():
+def index():
     return render_template('index.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    if not model:
-        return jsonify({'error': 'Model failed to load on server start'}), 500
-
     if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
+        return jsonify({'error': 'No file uploaded'})
     
     file = request.files['file']
-    file.save("temp.jpg")
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'})
 
-    try:
-        img = prepare_image("temp.jpg")
-        preds = model.predict(img)
-        idx = np.argmax(preds)
-        result = CLASS_NAMES[idx]
-        conf = float(np.max(preds)) * 100
+    if file:
+        # Save file temporarily
+        filename = "temp_upload.jpg"
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
 
-        hm_b64 = None
-        if target_layer:
+        # --- IMAGE PREPROCESSING (THE FIX) ---
+        try:
+            # 1. Read Image
+            img = cv2.imread(file_path)
+            
+            # 2. Fix Color: OpenCV loads as BGR, but Keras needs RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # 3. Resize: Force it to 224x224 (AlexNet standard)
+            img = cv2.resize(img, (224, 224))
+            
+            # 4. Normalize: Convert 0-255 (integers) to 0-1 (decimals)
+            # This is the most common reason for wrong predictions!
+            img_array = img / 255.0
+            
+            # 5. Add Batch Dimension: Change shape from (224,224,3) to (1,224,224,3)
+            img_array = np.expand_dims(img_array, axis=0)
+
+            # --- PREDICTION ---
+            predictions = model.predict(img_array)
+            
+            # DEBUG: Print raw numbers to terminal so we can see what the AI thinks
+            print(f"🔍 RAW PROBABILITIES: {predictions}")
+
+            # Get the highest score
+            class_index = np.argmax(predictions[0])
+            predicted_label = CLASSES[class_index]
+            confidence = float(np.max(predictions[0])) * 100
+
+            # --- GRAD-CAM HEATMAP ---
+            # We use the raw RGB image (0-255) for the heatmap generation
+            # Note: We pass the image *array* (normalized) to the heatmap generator
             try:
-                print(f"Generating heatmap for layer: {target_layer}...")
-                hm = gradcam.make_gradcam_heatmap(img, model, target_layer)
-                hm_path = gradcam.save_and_display_gradcam("temp.jpg", hm)
-                hm_b64 = image_to_base64(hm_path)
-                print("Heatmap generated successfully!")
-            except Exception as e:
-                print(f"HEATMAP FAILED: {e}")
-                traceback.print_exc() # This prints the full error to terminal
-        else:
-            print("Warning: No 'conv' layer found for heatmap.")
+                # Find the last convolutional layer (usually 'conv2d_4' or similar in AlexNet)
+                # We let the helper find the last layer automatically if possible, 
+                # or you can specify it manually if this fails.
+                target_layer = None 
+                for layer in reversed(model.layers):
+                    if 'conv' in layer.name:
+                        target_layer = layer.name
+                        break
+                
+                print(f"🔥 Generating Heatmap using layer: {target_layer}")
+                
+                heatmap = gradcam.make_gradcam_heatmap(img_array, model, target_layer)
+                
+                # Save heatmap result
+                heatmap_filename = "heatmap_result.jpg"
+                heatmap_path = os.path.join(UPLOAD_FOLDER, heatmap_filename)
+                
+                # We need the original image path for superimposing
+                gradcam.save_and_display_gradcam(file_path, heatmap, alpha=0.4)
+                
+                # Move the result to static folder so frontend can see it
+                # (gradcam.py saves to 'heatmap_result.jpg', we move it)
+                if os.path.exists("heatmap_result.jpg"):
+                    os.rename("heatmap_result.jpg", heatmap_path)
+                    
+            except Exception as hm_error:
+                print(f"⚠️ Heatmap Failed: {hm_error}")
+                heatmap_filename = None # Continue without heatmap if it fails
 
-        return jsonify({'diagnosis': result, 'confidence': f"{conf:.2f}", 'heatmap': hm_b64})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            # Return JSON result
+            return jsonify({
+                'prediction': predicted_label,
+                'confidence': f"{confidence:.2f}",
+                'heatmap_url': f"/{UPLOAD_FOLDER}/{heatmap_filename}" if heatmap_filename else None
+            })
+
+        except Exception as e:
+            print(f"❌ Prediction Error: {e}")
+            return jsonify({'error': str(e)})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
