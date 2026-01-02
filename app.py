@@ -66,7 +66,7 @@ except Exception as e:
     print(f"❌ Error loading model: {e}")
     exit(1)
 
-CLASSES = ['Benign', 'Early', 'Pre', 'Pro']
+CLASSES = ['Benign', 'Pro', 'Pre', 'Early']
 
 # --- 3. ROUTES ---
 
